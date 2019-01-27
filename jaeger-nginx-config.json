@@ -1,5 +1,6 @@
 {
   "service_name": "nginx",
+  "diabled" : false,
   "sampler": {
     "type": "const",
     "param": 1

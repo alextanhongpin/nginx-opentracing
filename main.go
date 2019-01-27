@@ -4,31 +4,19 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
+	opentracing "github.com/opentracing/opentracing-go"
+	olog "github.com/opentracing/opentracing-go/log"
 	"go.opencensus.io/exporter/jaeger"
 	"go.opencensus.io/plugin/ochttp"
+	"go.opencensus.io/plugin/ochttp/propagation/tracecontext"
+	"go.opencensus.io/tag"
+
 	"go.opencensus.io/trace"
 )
 
 func main() {
-	// cfg := jaegercfg.Configuration{
-	//         Sampler: &jaegercfg.SamplerConfig{
-	//                 Type:  jaeger.SamplerTypeConst,
-	//                 Param: 1,
-	//         },
-	//         Reporter: &jaegercfg.ReporterConfig{
-	//                 LogSpans: true,
-	//         },
-	// }
-	// closer, err := cfg.InitGlobalTracer(
-	//         "serviceName",
-	//         jaegercfg.Logger(jaegerlog.StdLogger),
-	//         jaegercfg.Metrics(metrics.NullFactory),
-	// )
-	// if err != nil {
-	//         log.Fatal(err)
-	// }
-	// defer closer.Close()
 	// https://opencensus.io/exporters/supported-exporters/go/jaeger/
 	exporter, err := jaeger.NewExporter(jaeger.Options{
 		Endpoint:      "http://localhost:14268",
@@ -46,15 +34,18 @@ func main() {
 
 	client := &http.Client{Transport: &ochttp.Transport{}}
 	mux := http.NewServeMux()
+	tctx := new(tracecontext.HTTPFormat)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		span := trace.FromContext(ctx)
-		fmt.Printf("%#v", span)
-		if span == nil {
-			ctx, span = trace.StartSpan(ctx, "http/something")
-		} else {
-			ctx, span = trace.StartSpanWithRemoteParent(ctx, "hello", span.SpanContext())
-		}
+
+		var span *trace.Span
+		spanCtx, _ := tctx.SpanContextFromRequest(r)
+		// if !ok {
+		//         log.Println("not ok")
+		//         ctx, span = trace.StartSpan(ctx, "hello")
+		// } else {
+		ctx, span = trace.StartSpanWithRemoteParent(ctx, "/hello", spanCtx)
+		// }
 
 		span.AddAttributes(trace.StringAttribute("visited endpoint", "this endpoint has been visited"))
 		defer span.End()
@@ -72,17 +63,40 @@ func main() {
 	mux.HandleFunc("/car", func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
+		tagMap := tag.FromContext(ctx)
+		fmt.Println("tagmap2", tagMap)
 		span := trace.FromContext(ctx)
-		fmt.Printf("%#v", span)
+		fmt.Printf("%#v\n", span)
 		if span == nil {
-			ctx, span = trace.StartSpan(ctx, "http/something")
+			ctx, span = trace.StartSpan(ctx, "/")
 		} else {
-			ctx, span = trace.StartSpanWithRemoteParent(ctx, "hello", span.SpanContext())
+			ctx, span = trace.StartSpanWithRemoteParent(ctx, "world", span.SpanContext())
 		}
 		span.AddAttributes(trace.StringAttribute("hello", "request kade"))
 		defer span.End()
 		fmt.Fprintf(w, "car")
 	})
+
+	mux.HandleFunc("/test", func(w http.ResponseWriter, r *http.Request) {
+		ctx, _ := opentracing.GlobalTracer().Extract(
+			opentracing.HTTPHeaders,
+			opentracing.HTTPHeadersCarrier(r.Header),
+		)
+		span := opentracing.StartSpan(
+			"/greetings",
+			opentracing.ChildOf(ctx),
+		)
+		defer span.Finish()
+		span.LogFields(
+			olog.String("event", "soft error"),
+			olog.String("type", "cache timeout"),
+			olog.Int("waited.millis", 1500))
+		now := time.Now().Format(time.RFC3339)
+		fmt.Fprintf(w, now)
+	})
 	fmt.Println("listening to port *:8080")
-	http.ListenAndServe(":8080", mux)
+	och := &ochttp.Handler{
+		Handler: mux, // The handler you'd have used originally
+	}
+	http.ListenAndServe(":8080", och)
 }
